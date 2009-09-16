@@ -161,23 +161,24 @@ int main (int argc, char **argv)
 	openlog("tcpwatch", LOG_CONS, LOG_DAEMON);
 	logmsg(LOG_NOTICE, "Started with filter: %s", bpf);
 
+	/* prepare for poll loop */
+	char errmsg[1024];	/* XXX - arbitrary size */
+	int error = 0;
+	int cnt;
+	int nfds;
+	struct pollfd pfd[1];
+
+	/* stuff to poll */
+	pfd[0].fd = pcap_fileno(descr);
+	pfd[0].events = POLLIN;
+	pfd[0].revents = 0;
+	//pfd[1].fd = control_sock;
+	//pfd[1].events = POLLIN;
+	//pfd[1].revents = 0;
+
 	/* Main loop */
 	for(;;)
 	{
-		char errmsg[1024];	/* XXX - arbitrary size */
-		int error = 0;
-		int cnt;
-		int nfds;
-		struct pollfd pfd[1];
-
-		/* stuff to poll */
-		pfd[0].fd = pcap_fileno(descr);
-		pfd[0].events = POLLIN;
-		pfd[0].revents = 0;
-		//pfd[1].fd = control_sock;
-		//pfd[1].events = POLLIN;
-		//pfd[1].revents = 0;
-
 		nfds = poll(pfd, 1, 200);
 		if (nfds == -1 || (pfd[0].revents & (POLLERR|POLLHUP|POLLNVAL))) {
 			if (errno != EINTR)
