@@ -17,7 +17,7 @@
 char *iface = NULL;
 char *bpf = NULL;
 int i, waitfirst = 0, daemonize = 1;
-long long unsigned int interval = 1000ULL;
+uint64_t interval = 1000ULL;
 int log_facility = LOG_DAEMON;
 
 /* Signal handler flags */
@@ -169,9 +169,9 @@ int main (int argc, char **argv)
 
 	/* prepare timer */
 	struct itimerspec new_value;
-	int max_exp, tfd;
+	int tfd;
 	struct timespec now;
-	uint64_t exp, tot_exp;
+	uint64_t exp;
 	ssize_t s;
 
 	if (clock_gettime(CLOCK_REALTIME, &now) == -1)
@@ -223,7 +223,7 @@ int main (int argc, char **argv)
 		fprintf(stderr, "daemon() failed. Staying in foreground.\n");
 
 	openlog("tcpwatch", LOG_CONS, LOG_DAEMON);
-	logmsg(LOG_NOTICE, "Starting with timer %llums and filter: `%s'", interval/1000000, bpf);
+	logmsg(LOG_NOTICE, "Starting with %llums timer and filter: `%s'", interval/1000000, bpf);
 
 	/* Main loop */
 	for(;;)
@@ -248,10 +248,7 @@ int main (int argc, char **argv)
 
 		/* Handle timer */
 		if (pfd[1].revents) {
-			// log an 'outage'
-			logmsg(LOG_DEBUG, "Going to read()");
 			s = read(tfd, &exp, sizeof(uint64_t));
-			logmsg(LOG_DEBUG, "Finished read()");
 			if (s != sizeof(uint64_t))
 				logmsg(LOG_DEBUG, "Timer fail.");
 			logmsg(LOG_DEBUG, "Timer expired!");
