@@ -4,13 +4,20 @@
 #include <ctype.h>
 #include <syslog.h>
 #include <signal.h>
+#include <errno.h>
+#include <sys/timerfd.h>
+#include <time.h>
+#include <stdint.h>	/* Definition of uint64_t */
 #include "tcpwatch.h"
 
 #define SNAP_LEN 1518
+#define INTV_MIN 1ULL	/* milliseconds */
+#define INTV_MAX 18446744073709ULL	/* milliseconds */
 
 char *iface = NULL;
 char *bpf = NULL;
-int i, waitfirst = 0, daemonize = 1, interval = 0;
+int i, waitfirst = 0, daemonize = 1;
+long long unsigned int interval = 1000ULL;
 int log_facility = LOG_DAEMON;
 
 /* Signal handler flags */
@@ -82,7 +89,14 @@ int getcmdline(int argc, char **argv)
 				iface = optarg;
 				break;
 			case 'w':
-				interval = atoi(optarg);
+				/* milliseconds */
+				interval = strtoll(optarg, NULL, 10);
+				if(interval < INTV_MIN)
+				{
+					fprintf(stderr, "Interval must be >= %lld ms\n", INTV_MIN);
+					//usage();
+					exit(EXIT_FAILURE);
+				}
 				break;
 			case 'f':
 				waitfirst = 1;
@@ -117,6 +131,7 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 	(void) packet; /* avoid warning about unused parameter */ 
 
 	logmsg(LOG_DEBUG, "Got packet!");
+	// reset the timer here.. how?
 }
 
 static void sighand_exit(int signum)
@@ -152,14 +167,42 @@ int main (int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
+	/* prepare timer */
+	struct itimerspec new_value;
+	int max_exp, tfd;
+	struct timespec now;
+	uint64_t exp, tot_exp;
+	ssize_t s;
+
+	if (clock_gettime(CLOCK_REALTIME, &now) == -1)
+	{
+		fprintf(stderr, "clock_gettime failed: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
+	/* prepare interval */
+	interval *= 1000000; /* ms to ns */
+
+	new_value.it_value.tv_sec = interval / 1000000000;
+	new_value.it_value.tv_nsec = interval % 1000000000;
+	new_value.it_interval.tv_sec = interval / 1000000000;
+	new_value.it_interval.tv_nsec = interval % 1000000000;
+
+	tfd = timerfd_create(CLOCK_REALTIME, 0);
+	if (tfd == -1)
+	{
+		fprintf(stderr, "timerfd_create failed: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
+	if (timerfd_settime(tfd, 0, &new_value, NULL) == -1)
+	{
+		fprintf(stderr, "timerfd_settime failed: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
 	signal(SIGTERM, sighand_exit);
 	signal(SIGINT, sighand_exit);
-
-	if (daemonize && daemon(0, 0))
-		fprintf(stderr, "daemon() failed. Staying in foreground.\n");
-
-	openlog("tcpwatch", LOG_CONS, LOG_DAEMON);
-	logmsg(LOG_NOTICE, "Started with filter: %s", bpf);
 
 	/* prepare for poll loop */
 	char errmsg[1024];	/* XXX - arbitrary size */
@@ -172,14 +215,20 @@ int main (int argc, char **argv)
 	pfd[0].fd = pcap_fileno(descr);
 	pfd[0].events = POLLIN;
 	pfd[0].revents = 0;
-	//pfd[1].fd = control_sock;
-	//pfd[1].events = POLLIN;
-	//pfd[1].revents = 0;
+	pfd[1].fd = tfd;
+	pfd[1].events = POLLIN;
+	pfd[1].revents = 0;
+
+	if (daemonize && daemon(0, 0))
+		fprintf(stderr, "daemon() failed. Staying in foreground.\n");
+
+	openlog("tcpwatch", LOG_CONS, LOG_DAEMON);
+	logmsg(LOG_NOTICE, "Starting with timer %llums and filter: `%s'", interval/1000000, bpf);
 
 	/* Main loop */
 	for(;;)
 	{
-		nfds = poll(pfd, 1, 200);
+		nfds = poll(pfd, 2, 200);
 		if (nfds == -1 || (pfd[0].revents & (POLLERR|POLLHUP|POLLNVAL))) {
 			if (errno != EINTR)
 			{
@@ -195,6 +244,17 @@ int main (int argc, char **argv)
 				snprintf(errmsg, sizeof errmsg, pcap_geterr(descr));
 				error = 1;
 			}
+		}
+
+		/* Handle timer */
+		if (pfd[1].revents) {
+			// log an 'outage'
+			logmsg(LOG_DEBUG, "Going to read()");
+			s = read(tfd, &exp, sizeof(uint64_t));
+			logmsg(LOG_DEBUG, "Finished read()");
+			if (s != sizeof(uint64_t))
+				logmsg(LOG_DEBUG, "Timer fail.");
+			logmsg(LOG_DEBUG, "Timer expired!");
 		}
 
 		if (error)
