@@ -1,16 +1,20 @@
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <ctype.h>
 #include <syslog.h>
 #include <signal.h>
+#include <poll.h>
+#include <pcap.h>
 #include <errno.h>
 #include <sys/timerfd.h>
 #include <time.h>
 #include <stdint.h>	/* Definition of uint64_t */
-#include "tcpwatch.h"
 
-#define SNAP_LEN 1518
+#define MAXBUF 2048	/* Length of log message buffer */
+#define SNAP_LEN 1518	/* Packet capture snaplength */
 #define INTV_MIN 1ULL	/* milliseconds */
 #define INTV_MAX 18446744073709ULL	/* milliseconds */
 
@@ -129,9 +133,6 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 	(void) args; /* avoid warning about unused parameter */ 
 	(void) header; /* avoid warning about unused parameter */ 
 	(void) packet; /* avoid warning about unused parameter */ 
-
-	logmsg(LOG_DEBUG, "Got packet!");
-	// reset the timer here.. how?
 }
 
 static void sighand_exit(int signum)
@@ -170,15 +171,8 @@ int main (int argc, char **argv)
 	/* prepare timer */
 	struct itimerspec new_value;
 	int tfd;
-	struct timespec now;
 	uint64_t exp;
 	ssize_t s;
-
-	if (clock_gettime(CLOCK_REALTIME, &now) == -1)
-	{
-		fprintf(stderr, "clock_gettime failed: %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
-	}
 
 	/* prepare interval */
 	interval *= 1000000; /* ms to ns */
@@ -205,9 +199,10 @@ int main (int argc, char **argv)
 	signal(SIGINT, sighand_exit);
 
 	/* prepare for poll loop */
+	int gotpacket = 0, inoutage = 0;	/* state switches */
+	struct timespec ostart, oend;	/* outage start/end timestamps */
 	char errmsg[1024];	/* XXX - arbitrary size */
 	int error = 0;
-	int cnt;
 	int nfds;
 	struct pollfd pfd[1];
 
@@ -223,7 +218,7 @@ int main (int argc, char **argv)
 		fprintf(stderr, "daemon() failed. Staying in foreground.\n");
 
 	openlog("tcpwatch", LOG_CONS, LOG_DAEMON);
-	logmsg(LOG_NOTICE, "Starting with %llums timer and filter: `%s'", interval/1000000, bpf);
+	logmsg(LOG_NOTICE, "Starting with %llums deadline and filter: `%s'", interval/1000000, bpf);
 
 	/* Main loop */
 	for(;;)
@@ -239,19 +234,65 @@ int main (int argc, char **argv)
 
 		/* Handle packet arrivals */
 		if (pfd[0].revents) {
-			cnt = pcap_dispatch(descr, -1, (pcap_handler)got_packet, NULL);
-			if (cnt < 0) {
-				snprintf(errmsg, sizeof errmsg, pcap_geterr(descr));
-				error = 1;
+			/* Reading a packet from the fd is tricky, so
+			 * we leave all that work to pcap_dispatch
+			 * (which in turn calls pcap_read_packet to do
+			 * the actual reading).
+			 */
+			(void)pcap_dispatch(descr, -1, (pcap_handler)got_packet, NULL);
+
+			if(inoutage)
+			{
+				if (clock_gettime(CLOCK_REALTIME, &oend) == -1)
+				{
+					logmsg(LOG_ERR, "clock_gettime failed: %s", strerror(errno));
+					exit_request = 1;
+				}
+
+				/* Calculate timediff */
+				oend.tv_sec -= ostart.tv_sec;
+				oend.tv_nsec -= ostart.tv_nsec;
+
+				/* Add elapsed timer. FIXME: Optional? */
+				/*
+				oend.tv_sec += new_value.it_interval.tv_sec;
+				oend.tv_nsec += new_value.it_interval.tv_nsec;
+				if(oend.tv_nsec >= 1000000000)
+				{
+					oend.tv_sec++;
+					oend.tv_nsec -= 1000000000;
+				}
+				else */if(oend.tv_nsec < 0)
+				{
+					oend.tv_sec--;
+					oend.tv_nsec += 1000000000;
+				}
+
+				interval = oend.tv_sec * 1000 + oend.tv_nsec / 1000000;
+				logmsg(LOG_INFO, "Outage recovered after %llu ms", interval);
+
+				inoutage = 0;
 			}
+			gotpacket = 1;
 		}
 
 		/* Handle timer */
 		if (pfd[1].revents) {
 			s = read(tfd, &exp, sizeof(uint64_t));
 			if (s != sizeof(uint64_t))
-				logmsg(LOG_DEBUG, "Timer fail.");
-			logmsg(LOG_DEBUG, "Timer expired!");
+				logmsg(LOG_DEBUG, "Timer fd read fail.");
+			if(!gotpacket && !inoutage)
+			{
+				if (clock_gettime(CLOCK_REALTIME, &ostart) == -1)
+				{
+					logmsg(LOG_ERR, "clock_gettime failed: %s", strerror(errno));
+					exit_request = 1;
+				}
+				logmsg(LOG_DEBUG, "Outage detected: No packet within deadline.");
+
+				inoutage = 1;
+			}
+			gotpacket = 0;
 		}
 
 		if (error)
@@ -259,7 +300,7 @@ int main (int argc, char **argv)
 
 		if (exit_request)
 		{
-			logmsg(LOG_WARNING, "Exiting on user request.");
+			logmsg(LOG_WARNING, "Exiting on system/user request.");
 			break;
 		}
 	}
