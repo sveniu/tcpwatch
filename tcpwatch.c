@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <time.h>
 #include <sys/time.h>
+#include <sys/types.h>
 #include <stdint.h>	/* Definition of uint64_t */
 
 #define MAXBUF 2048	/* Length of log message buffer */
@@ -165,6 +166,7 @@ int main (int argc, char **argv)
 	struct bpf_program fp;
 	struct timeval tstart, tend;
 	uint64_t tdiff;
+	pid_t pid;
 
 	getcmdline(argc, argv);
 
@@ -203,6 +205,11 @@ int main (int argc, char **argv)
 
 	if (daemonize && daemon(0, 0))
 		fprintf(stderr, "daemon() failed. Staying in foreground.\n");
+
+	/* Get pid after forking. The pid is simply used to identify
+	 * instances of the program running simultaneously.
+	 */
+	pid = getpid();
 
 	if (daemonize)
 		openlog("tcpwatch", LOG_CONS, LOG_DAEMON);
@@ -248,7 +255,7 @@ int main (int argc, char **argv)
 				}
 
 				tdiff = tend.tv_sec * 1000 + tend.tv_usec / 1000;
-				logmsg(LOG_INFO, "Outage recovered after %llu ms", tdiff);
+				logmsg(LOG_INFO, "(PID %d) Outage recovered after %llu ms", pid, tdiff);
 
 				inoutage = 0;
 			}
@@ -264,7 +271,7 @@ int main (int argc, char **argv)
 					logmsg(LOG_ERR, "gettimeofday failed: %s", strerror(errno));
 					exit_request = 1;
 				}
-				logmsg(LOG_DEBUG, "Outage detected: No packet within deadline.");
+				logmsg(LOG_DEBUG, "(PID %d) Outage detected: No packet within deadline.", pid);
 				inoutage = 1;
 			}
 		}
