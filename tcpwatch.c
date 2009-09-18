@@ -9,8 +9,8 @@
 #include <poll.h>
 #include <pcap.h>
 #include <errno.h>
-#include <sys/timerfd.h>
 #include <time.h>
+#include <sys/time.h>
 #include <stdint.h>	/* Definition of uint64_t */
 
 #define MAXBUF 2048	/* Length of log message buffer */
@@ -147,6 +147,8 @@ int main (int argc, char **argv)
 	char errbuf[PCAP_ERRBUF_SIZE];
 	pcap_t *descr;
 	struct bpf_program fp;
+	struct timeval tstart, tend;
+	uint64_t tdiff;
 
 	getcmdline(argc, argv);
 
@@ -168,39 +170,11 @@ int main (int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	/* prepare timer */
-	struct itimerspec new_value;
-	int tfd;
-	uint64_t exp;
-	ssize_t s;
-
-	/* prepare interval */
-	interval *= 1000000; /* ms to ns */
-
-	new_value.it_value.tv_sec = interval / 1000000000;
-	new_value.it_value.tv_nsec = interval % 1000000000;
-	new_value.it_interval.tv_sec = interval / 1000000000;
-	new_value.it_interval.tv_nsec = interval % 1000000000;
-
-	tfd = timerfd_create(CLOCK_REALTIME, 0);
-	if (tfd == -1)
-	{
-		fprintf(stderr, "timerfd_create failed: %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
-	}
-
-	if (timerfd_settime(tfd, 0, &new_value, NULL) == -1)
-	{
-		fprintf(stderr, "timerfd_settime failed: %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
-	}
-
 	signal(SIGTERM, sighand_exit);
 	signal(SIGINT, sighand_exit);
 
 	/* prepare for poll loop */
-	int gotpacket = 0, inoutage = 0;	/* state switches */
-	struct timespec ostart, oend;	/* outage start/end timestamps */
+	int inoutage = 0;	/* state switch */
 	char errmsg[1024];	/* XXX - arbitrary size */
 	int error = 0;
 	int nfds;
@@ -210,20 +184,18 @@ int main (int argc, char **argv)
 	pfd[0].fd = pcap_fileno(descr);
 	pfd[0].events = POLLIN;
 	pfd[0].revents = 0;
-	pfd[1].fd = tfd;
-	pfd[1].events = POLLIN;
-	pfd[1].revents = 0;
 
 	if (daemonize && daemon(0, 0))
 		fprintf(stderr, "daemon() failed. Staying in foreground.\n");
 
-	openlog("tcpwatch", LOG_CONS, LOG_DAEMON);
-	logmsg(LOG_NOTICE, "Starting with %llums deadline and filter: `%s'", interval/1000000, bpf);
+	if (daemonize)
+		openlog("tcpwatch", LOG_CONS, LOG_DAEMON);
+	logmsg(LOG_NOTICE, "Starting with %llums deadline and filter: `%s'", interval, bpf);
 
 	/* Main loop */
 	for(;;)
 	{
-		nfds = poll(pfd, 2, 200);
+		nfds = poll(pfd, 1, interval);
 		if (nfds == -1 || (pfd[0].revents & (POLLERR|POLLHUP|POLLNVAL))) {
 			if (errno != EINTR)
 			{
@@ -243,56 +215,42 @@ int main (int argc, char **argv)
 
 			if(inoutage)
 			{
-				if (clock_gettime(CLOCK_REALTIME, &oend) == -1)
+				if (gettimeofday(&tend, NULL) == -1)
 				{
-					logmsg(LOG_ERR, "clock_gettime failed: %s", strerror(errno));
+					logmsg(LOG_ERR, "gettimeofday failed: %s", strerror(errno));
 					exit_request = 1;
 				}
 
 				/* Calculate timediff */
-				oend.tv_sec -= ostart.tv_sec;
-				oend.tv_nsec -= ostart.tv_nsec;
+				tend.tv_sec -= tstart.tv_sec;
+				tend.tv_usec -= tstart.tv_usec;
 
-				/* Add elapsed timer. FIXME: Optional? */
-				/*
-				oend.tv_sec += new_value.it_interval.tv_sec;
-				oend.tv_nsec += new_value.it_interval.tv_nsec;
-				if(oend.tv_nsec >= 1000000000)
+				if(tend.tv_usec < 0)
 				{
-					oend.tv_sec++;
-					oend.tv_nsec -= 1000000000;
-				}
-				else */if(oend.tv_nsec < 0)
-				{
-					oend.tv_sec--;
-					oend.tv_nsec += 1000000000;
+					tend.tv_sec--;
+					tend.tv_usec += 1000000;
 				}
 
-				interval = oend.tv_sec * 1000 + oend.tv_nsec / 1000000;
-				logmsg(LOG_INFO, "Outage recovered after %llu ms", interval);
+				tdiff = tend.tv_sec * 1000 + tend.tv_usec / 1000;
+				logmsg(LOG_INFO, "Outage recovered after %llu ms", tdiff);
 
 				inoutage = 0;
 			}
-			gotpacket = 1;
 		}
 
-		/* Handle timer */
-		if (pfd[1].revents) {
-			s = read(tfd, &exp, sizeof(uint64_t));
-			if (s != sizeof(uint64_t))
-				logmsg(LOG_DEBUG, "Timer fd read fail.");
-			if(!gotpacket && !inoutage)
+		/* Handle poll timeout */
+		if(!nfds)
+		{
+			if(!inoutage)
 			{
-				if (clock_gettime(CLOCK_REALTIME, &ostart) == -1)
+				if (gettimeofday(&tstart, NULL) == -1)
 				{
-					logmsg(LOG_ERR, "clock_gettime failed: %s", strerror(errno));
+					logmsg(LOG_ERR, "gettimeofday failed: %s", strerror(errno));
 					exit_request = 1;
 				}
 				logmsg(LOG_DEBUG, "Outage detected: No packet within deadline.");
-
 				inoutage = 1;
 			}
-			gotpacket = 0;
 		}
 
 		if (error)
