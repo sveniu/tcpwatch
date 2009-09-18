@@ -20,7 +20,7 @@
 
 char *iface = NULL;
 char *bpf = NULL;
-int i, waitfirst = 0, daemonize = 1;
+int i, daemonize = 1;
 uint64_t interval = 1000ULL;
 int log_facility = LOG_DAEMON;
 
@@ -77,6 +77,14 @@ void logmsg(const int priority, const char *fmt, ...)
 	return;
 }
 
+void usage(char* prog)
+{
+	printf("Usage: %s -i <iface> [options]\n", prog);
+	printf("Options:\n");
+	printf("  -w n   Set deadline to n milliseconds.\n");
+	printf("  -D     Run as daemon. Log to syslog.\n");
+}
+
 /* from
  * http://www.gnu.org/software/libc/manual/html_node/Example-of-Getopt.html
  */
@@ -86,9 +94,12 @@ int getcmdline(int argc, char **argv)
 
 	opterr = 0;
 
-	while((c = getopt(argc, argv, "i:w:fD")) != -1)
+	while((c = getopt(argc, argv, "hi:w:fD")) != -1)
 		switch (c)
 		{
+			case 'h':
+				usage(argv[0]);
+				exit(EXIT_SUCCESS);
 			case 'i':
 				iface = optarg;
 				break;
@@ -97,13 +108,10 @@ int getcmdline(int argc, char **argv)
 				interval = strtoll(optarg, NULL, 10);
 				if(interval < INTV_MIN)
 				{
-					fprintf(stderr, "Interval must be >= %lld ms\n", INTV_MIN);
-					//usage();
+					fprintf(stderr, "Fatal: Interval must be >= %lld ms\n", INTV_MIN);
+					usage(argv[0]);
 					exit(EXIT_FAILURE);
 				}
-				break;
-			case 'f':
-				waitfirst = 1;
 				break;
 			case 'D':
 				daemonize = 0;
@@ -112,17 +120,25 @@ int getcmdline(int argc, char **argv)
 				if(optopt == 'i' || optopt == 'w')
 					fprintf(stderr, "Option -%c requires an argument.\n", optopt);
 				else if(isprint (optopt))
-					fprintf(stderr, "Unknown option `-%c'.\n", optopt);
+					fprintf(stderr, "Fatal: Unknown option `-%c'.\n", optopt);
 				else
-					fprintf(stderr, "Unknown option character `\\x%x'.\n", optopt);
-				//usage();
+					fprintf(stderr, "Fatal: Unknown option character `\\x%x'.\n", optopt);
+				usage(argv[0]);
 				exit(EXIT_FAILURE);
 			default:
-				//usage();
+				usage(argv[0]);
 				exit(EXIT_FAILURE);
 		}
 
-	/* the rest is the bpf */
+	/* iface arg is required */
+	if(iface == NULL)
+	{
+		fprintf(stderr, "Fatal: No interface specified.\n");
+		usage(argv[0]);
+		exit(EXIT_FAILURE);
+	}
+
+	/* the rest is the bpf, even if empty */
 	bpf = copy_argv(&argv[optind]);
 
 	return 0;
@@ -155,18 +171,18 @@ int main (int argc, char **argv)
 	/* open capture device */
 	descr = pcap_open_live(iface, SNAP_LEN, 0, 0, errbuf);
 	if (descr == NULL) {
-		fprintf(stderr, "pcap_open_live failed: %s\n", errbuf);
+		fprintf(stderr, "pcap_open_live failed (%s): %s\n", iface, errbuf);
 		exit(EXIT_FAILURE);
 	}
 
 	/* apply the filter */
 	if (pcap_compile(descr, &fp, bpf, 0, 0) == -1) {
-		fprintf(stderr, "pcap_compile failed: %s\n", pcap_geterr(descr));
+		fprintf(stderr, "pcap_compile failed (%s): %s\n", iface, pcap_geterr(descr));
 		exit(EXIT_FAILURE);
 	}
 
 	if (pcap_setfilter(descr, &fp) == -1) {
-		fprintf(stderr, "pcap_setfilter failed: %s\n", pcap_geterr(descr));
+		fprintf(stderr, "pcap_setfilter failed (%s): %s\n", iface, pcap_geterr(descr));
 		exit(EXIT_FAILURE);
 	}
 
