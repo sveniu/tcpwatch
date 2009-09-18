@@ -169,7 +169,7 @@ int main (int argc, char **argv)
 	getcmdline(argc, argv);
 
 	/* open capture device */
-	descr = pcap_open_live(iface, SNAP_LEN, 0, 0, errbuf);
+	descr = pcap_open_live(iface, SNAP_LEN, 1, 0, errbuf);
 	if (descr == NULL) {
 		fprintf(stderr, "pcap_open_live failed (%s): %s\n", iface, errbuf);
 		exit(EXIT_FAILURE);
