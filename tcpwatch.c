@@ -82,7 +82,7 @@ void usage(char* prog)
 	printf("Usage: %s -i <iface> [options]\n", prog);
 	printf("Options:\n");
 	printf("  -w n   Set deadline to n milliseconds.\n");
-	printf("  -D     Run as daemon. Log to syslog.\n");
+	printf("  -D     Run in foreground. Log to stderr.\n");
 }
 
 /* from
