@@ -18,6 +18,7 @@
 #define SNAP_LEN 1518	/* Packet capture snaplength */
 #define INTV_MIN 1ULL	/* milliseconds */
 #define INTV_MAX 18446744073709ULL	/* milliseconds */
+#define TSTAMPFMT "%Y-%m-%dT%H:%M:%S"
 
 char *iface = NULL;
 char *bpf = NULL;
@@ -166,6 +167,9 @@ int main (int argc, char **argv)
 	struct bpf_program fp;
 	struct timeval tstart, tend;
 	uint64_t tdiff;
+	time_t ttmp;
+	char tstamp[20];
+	suseconds_t ustmp;
 	pid_t pid;
 
 	getcmdline(argc, argv);
@@ -244,6 +248,10 @@ int main (int argc, char **argv)
 					exit_request = 1;
 				}
 
+				ttmp = time(NULL);
+				strftime(tstamp, sizeof(tstamp), TSTAMPFMT, localtime(&ttmp));
+				ustmp = tend.tv_usec;
+
 				/* Calculate timediff */
 				tend.tv_sec -= tstart.tv_sec;
 				tend.tv_usec -= tstart.tv_usec;
@@ -255,7 +263,11 @@ int main (int argc, char **argv)
 				}
 
 				tdiff = tend.tv_sec * 1000 + tend.tv_usec / 1000;
-				logmsg(LOG_INFO, "(PID %d) Outage recovered after %llu ms", pid, tdiff);
+				logmsg(LOG_INFO, "(PID %d) %s.%03ld Outage recovered (%llu ms downtime).",
+						pid,
+						tstamp,
+						ustmp/1000,
+						tdiff);
 
 				inoutage = 0;
 			}
@@ -271,7 +283,13 @@ int main (int argc, char **argv)
 					logmsg(LOG_ERR, "gettimeofday failed: %s", strerror(errno));
 					exit_request = 1;
 				}
-				logmsg(LOG_DEBUG, "(PID %d) Outage detected: No packet within deadline.", pid);
+				ttmp = time(NULL);
+				strftime(tstamp, sizeof(tstamp), TSTAMPFMT, localtime(&ttmp));
+				logmsg(LOG_DEBUG, "(PID %d) %s.%03ld Outage detected (%llu ms deadline).",
+						pid,
+						tstamp,
+						tstart.tv_usec/1000,
+						interval);
 				inoutage = 1;
 			}
 		}
