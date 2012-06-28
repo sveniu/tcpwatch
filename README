@@ -1,0 +1,14 @@
+tcpwatch: A network packet arrival deadline monitor.
+
+Tcpwatch lets you specify a tcpdump/bpf filter and a time interval in
+milliseconds. If a packet matching the filter arrives within the time
+interval, nothing happens. If it does not arrive within the interval,
+an outage is signalled to stdout or syslog. Once a packet matches
+again, the outage is over, a message is signalled to stdout or syslog,
+and the deadline timer is reset.
+
+Usage: tcpwatch -i <iface> [options]
+Options:
+  -w n   Set deadline to n milliseconds.
+  -D     Run in foreground. Log to stderr.
+
